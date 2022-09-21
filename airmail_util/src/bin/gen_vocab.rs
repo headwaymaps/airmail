@@ -7,7 +7,7 @@ use std::{
     usize,
 };
 
-use airmail::lp_file_stream::{LpEntryToken, LpFileStream};
+use airmail_lib::lp_file_stream::{LpEntryToken, LpFileStream};
 use clap::{command, Arg, ArgAction};
 use fst::SetBuilder;
 use rayon::prelude::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};

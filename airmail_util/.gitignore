@@ -1,0 +1,5 @@
+/target
+*.tsv
+*.fst
+*.crf
+*.gz

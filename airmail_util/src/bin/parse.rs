@@ -1,6 +1,6 @@
 use std::{fs::File, io::Read};
 
-use airmail::tokenizer::Tokenizer;
+use airmail_lib::tokenizer::Tokenizer;
 use clap::Parser;
 use crfsuite::{Attribute, Model};
 use fst::raw::Fst;
@@ -54,6 +54,22 @@ fn main() {
         })
         .collect();
 
-    let tagged = tagger.tag(&attributes).unwrap();
-    println!("Tagged: {:?}", tagged);
+    tagger.tag(&attributes).unwrap();
+    let viterbi = tagger.viterbi().unwrap();
+    let labels = tagger.labels().unwrap();
+    println!("Parsed as: {:?}", viterbi);
+    for i in 0..attributes.len() {
+        let mut other_probs: Vec<(&String, f64)> = labels
+            .iter()
+            .filter(|label| label != &&viterbi[i])
+            .map(|other_label| (other_label, tagger.marginal(other_label, i as i32).unwrap()))
+            .collect();
+        other_probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let mut alternate_viterbi = viterbi.clone();
+        alternate_viterbi[i] = other_probs[0].0.to_string();
+        println!(
+            "{} chance of it being {:?}",
+            other_probs[0].1, alternate_viterbi
+        );
+    }
 }

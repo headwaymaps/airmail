@@ -1,0 +1,27 @@
+[package]
+name = "airmail-wasm"
+version = "0.1.0"
+authors = ["Ellen Poe <ellen@ellenhp.me>"]
+edition = "2018"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["console_error_panic_hook"]
+
+[dependencies]
+wasm-bindgen = "0.2.63"
+airmail_lib = { version = "0.1.0", path = "../airmail_lib" }
+getrandom = { features = [ "js" ] }
+once_cell = "1.15.0"
+
+console_error_panic_hook = { version = "0.1.6", optional = true }
+
+wee_alloc = { version = "0.4.5", optional = true }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3.13"
+
+[profile.release]
+opt-level = "s"

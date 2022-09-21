@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use airmail::{
+use airmail_lib::{
     lp_file_stream::{LpEntryToken, LpFileStream},
     tokenizer::Tokenizer,
 };
@@ -79,7 +79,7 @@ fn main() {
             println!("done training");
             panic!();
         });
-        tsv_stream.take(2000000).par_bridge().for_each(|tsv_item| {
+        tsv_stream.take(200000).par_bridge().for_each(|tsv_item| {
             let mut attribute_vec_per_token = vec![];
             let mut target_per_token = vec![];
             let all_tokens: Vec<&LpEntryToken> = tsv_item

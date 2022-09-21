@@ -1,6 +1,6 @@
 use std::{fs::File, io::Read};
 
-use airmail::tokenizer::Tokenizer;
+use airmail_lib::tokenizer::Tokenizer;
 use clap::Parser;
 use fst::{raw::Fst, Streamer};
 
