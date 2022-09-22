@@ -1,22 +1,24 @@
-use std::u8;
+use std::{collections::HashSet, u8};
 
-use crate::tokenizer::Tokenizer;
-use crfs::{Attribute, Model};
-use fst::raw::Fst;
-pub struct Parser<'a> {
+use crate::{
+    model::{Model, PackedModel},
+    tagger::Attribute,
+    tokenizer::Tokenizer,
+};
+pub struct Parser {
     tokenizer: Tokenizer,
-    model: Model<'a>,
+    model: Model,
 }
 
-impl<'a> Parser<'a> {
-    pub fn new(vocab_data: &[u8], model_data: &'a [u8]) -> Parser<'a> {
-        let fst = Fst::new(vocab_data.to_vec()).unwrap();
-        let tokenizer = Tokenizer::new(&fst);
-        let model = Model::new(model_data).unwrap();
+impl<'a> Parser {
+    pub fn new(packed_model_data: &[u8]) -> Parser {
+        let packed_model: PackedModel = bincode2::deserialize(packed_model_data).unwrap();
+        let model = Model::from(packed_model);
+        let tokenizer = Tokenizer::new(&model.get_vocab());
         Parser { tokenizer, model }
     }
 
-    pub fn parse(&self, query: &str) -> Vec<String> {
+    pub fn parse(&self, query: &str) -> Vec<Vec<String>> {
         let mut tagger = self.model.tagger().unwrap();
         let features = self.tokenizer.tokenize(query);
         let attributes: Vec<Vec<Attribute>> = features
@@ -29,13 +31,24 @@ impl<'a> Parser<'a> {
                 attrib_vec
             })
             .collect();
-
-        let tags: Vec<String> = tagger
-            .tag(&attributes)
-            .unwrap()
-            .iter()
-            .map(|tag| tag.to_string())
-            .collect();
-        tags
+        let mut tags_list = Vec::new();
+        let mut tags_set = HashSet::new();
+        {
+            let tags = tagger.tag(&attributes, 0.0).unwrap();
+            let tag_strs: Vec<String> = tags.0.iter().map(|tag| tag.to_string()).collect();
+            tags_list.push(tag_strs.clone());
+            tags_set.insert(tag_strs);
+        }
+        for i in 1..20 {
+            for _ in 0..10 {
+                let tags = tagger.tag(&attributes, i as f64 / 100.0).unwrap();
+                let tag_strs: Vec<String> = tags.0.iter().map(|tag| tag.to_string()).collect();
+                if !tags_set.contains(&tag_strs) {
+                    tags_list.push(tag_strs.clone());
+                    tags_set.insert(tag_strs);
+                }
+            }
+        }
+        tags_list
     }
 }

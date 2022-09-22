@@ -52,7 +52,7 @@ impl<'a> Iterator for ClampedExpandedVocab<'a> {
                         continue;
                     }
                     self.token = new_token.clone();
-                    self.remaining_count = usize::min(*new_frequency, 10);
+                    self.remaining_count = usize::min(*new_frequency, 100);
                     return Some(self.token.clone().0);
                 } else {
                     return None;
@@ -88,16 +88,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let mut all_labels = HashSet::new();
                 while let Ok(token) = reciever.recv_timeout(Duration::from_secs(1)) {
                     all_labels.insert(token.label.clone());
+                    let token_with_suffix = format!("{}Ė", token.transliterated);
                     if let Some(prev) =
-                        token_frequencies.get(&(token.transliterated.clone(), token.label.clone()))
+                        token_frequencies.get(&(token_with_suffix.clone(), token.label.clone()))
                     {
-                        token_frequencies.insert(
-                            (token.transliterated.clone(), token.label.clone()),
-                            prev + 1,
-                        );
+                        token_frequencies
+                            .insert((token_with_suffix.clone(), token.label.clone()), prev + 1);
                     } else {
                         token_frequencies
-                            .insert((token.transliterated.clone(), token.label.clone()), 1);
+                            .insert((token_with_suffix.clone(), token.label.clone()), 1);
                     }
                 }
                 let mut vocab: HashSet<String> = HashSet::new();
@@ -126,16 +125,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             .unwrap();
                         let tokenizer_impl = tokenizer.train(&mut trainer, data).unwrap();
                         let vocab_map = tokenizer_impl.get_vocab(false);
-                        let vocab: HashSet<String> = vocab_map
-                            .into_keys()
-                            .map(|s| {
-                                if let Some(key) = s.strip_prefix("Ġ") {
-                                    key.to_string()
-                                } else {
-                                    s
-                                }
-                            })
-                            .collect();
+                        let vocab: HashSet<String> = vocab_map.into_keys().collect();
                         println!("{} vocab contains {} items", label, vocab.len());
                         vocab
                     })

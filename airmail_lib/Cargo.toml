@@ -7,4 +7,7 @@ edition = "2021"
 fst = "0.4"
 deunicode = "1.3.2"
 rand = "0.8.5"
-crfs = "0.2.0"
+bitflags = "1.2.1"
+bstr = "1.0.0"
+serde = { version = "1.0", features = ["derive"] }
+bincode2 = "2.0.1"

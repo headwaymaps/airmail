@@ -16,13 +16,8 @@ impl Tokenizer {
         let mut feature_strings = HashMap::new();
         let mut feature_id = 0u32;
         while let Some((key, _out)) = vocab_stream.next() {
-            if let Ok(s) = String::from_utf8(key.to_vec()) {
-                let vocab_item = if let Some(after_prefix) = s.strip_prefix("Ġ") {
-                    after_prefix
-                } else {
-                    &s
-                };
-                if feature_ids.contains_key(vocab_item) {
+            if let Ok(vocab_item) = String::from_utf8(key.to_vec()) {
+                if feature_ids.contains_key(&vocab_item) {
                     continue;
                 }
                 feature_ids.insert(vocab_item.to_string(), feature_id);

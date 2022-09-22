@@ -24,9 +24,6 @@ struct Args {
     /// The tsv training file to use.
     #[clap(long, value_parser)]
     tsv: String,
-    /// The string to tokenize.
-    #[clap(long, value_parser)]
-    str: Option<String>,
 }
 
 fn main() {
@@ -53,7 +50,7 @@ fn main() {
                 .unwrap();
             let mut counter = 0usize;
             while let Ok((attribute_vec_per_token, target_per_token)) =
-                reciever.recv_timeout(Duration::from_secs(1))
+                reciever.recv_timeout(Duration::from_secs(10))
             {
                 let group = if counter % 100 == 0 { 1 } else { 0 };
                 let actual_attributes: Vec<Vec<Attribute>> = attribute_vec_per_token
@@ -74,12 +71,12 @@ fn main() {
                     println!("Processed {} lines", counter);
                 }
             }
-            println!("training");
+            println!("training with {} lines", counter);
             trainer.train("model.crf", 1).unwrap();
             println!("done training");
             panic!();
         });
-        tsv_stream.take(200000).par_bridge().for_each(|tsv_item| {
+        tsv_stream.take(50000000).par_bridge().for_each(|tsv_item| {
             let mut attribute_vec_per_token = vec![];
             let mut target_per_token = vec![];
             let all_tokens: Vec<&LpEntryToken> = tsv_item
@@ -88,7 +85,7 @@ fn main() {
                 .filter(|token| token.label != "FSEP")
                 .collect();
             let tokens_len = all_tokens.len();
-            let tokens_to_use = if tokens_len < 2 || thread_rng().gen::<bool>() {
+            let tokens_to_use = if tokens_len < 2 || thread_rng().gen::<f64>() < 0.2 {
                 all_tokens
             } else {
                 all_tokens
@@ -96,20 +93,28 @@ fn main() {
                     .take(thread_rng().gen_range(1..tokens_len))
                     .collect()
             };
+            let use_postcode = thread_rng().gen::<f64>() < 0.2;
+            if tokens_to_use
+                .iter()
+                .filter(|token| token.label == "po_box")
+                .count()
+                > 0
+            {
+                // PO boxes aren't useful for geocoding.
+                return;
+            }
             for token in tokens_to_use {
                 if token.label == "FSEP" {
                     continue;
                 }
                 let actual_label = match token.label.as_str() {
                     // The nuance associated with these different labels is too much for our parser to deal with given the size budget.
-                    "level" => "unit",
-                    "entrance" => "unit",
-                    "staircase" => "unit",
-                    // This is regrettable but this is a tiny parser and it doesn't have room to memorize what every `house` token looks like.
-                    "house" => continue,
+                    "level" => continue,
+                    "entrance" => continue,
+                    "staircase" => continue,
                     // Postal codes aren't nearly as important as other aspects of geocoding, but don't completely ignore them.
                     "postcode" => {
-                        if thread_rng().gen::<f64>() < 0.1 {
+                        if use_postcode {
                             "postcode"
                         } else {
                             continue;
@@ -117,8 +122,8 @@ fn main() {
                     }
                     // This is something we can deal with downstream.
                     "city" => "locality",
-                    "suburb" => "locality",
-                    "city_district" => "locality",
+                    "suburb" => "neighborhood",
+                    "city_district" => "neighborhood",
                     // Similarly, a structured search system can easily deal with this ambiguity.
                     "state_district" => "region",
                     "state" => "region",
@@ -134,13 +139,24 @@ fn main() {
                     }
                     all_features[0].clone()
                 };
-                let attributes: Vec<(String, f64)> = features
+                let mut attributes: Vec<(String, f64)> = features
                     .iter()
                     .map(|id| {
                         let name = tokenizer.stringify_feature(*id);
                         (name.clone(), *id as f64)
                     })
                     .collect();
+                if attributes
+                    .iter()
+                    .filter(|(attr, _id)| attr.starts_with("D:"))
+                    .count()
+                    > 0
+                {
+                    attributes = attributes
+                        .into_iter()
+                        .filter(|(attr, _id)| attr.starts_with("D:"))
+                        .collect();
+                }
                 attribute_vec_per_token.push(attributes);
                 target_per_token.push(actual_label.to_string());
             }
