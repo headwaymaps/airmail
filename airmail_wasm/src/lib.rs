@@ -8,8 +8,7 @@ use wasm_bindgen::prelude::*;
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
-static PARSER: Lazy<Parser> =
-    Lazy::new(|| Parser::new(include_bytes!("vocab.fst"), include_bytes!("model.crf")));
+static PARSER: Lazy<Parser> = Lazy::new(|| Parser::new(include_bytes!("model.airmail")));
 
 #[wasm_bindgen]
 pub fn parse(query: &str) -> Vec<JsValue> {

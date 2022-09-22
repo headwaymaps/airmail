@@ -1,18 +1,20 @@
 use std::u8;
 
-use crate::tokenizer::Tokenizer;
-use crfs::{Attribute, Model};
-use fst::raw::Fst;
-pub struct Parser<'a> {
+use crate::{
+    model::{Model, PackedModel},
+    tagger::Attribute,
+    tokenizer::Tokenizer,
+};
+pub struct Parser {
     tokenizer: Tokenizer,
-    model: Model<'a>,
+    model: Model,
 }
 
-impl<'a> Parser<'a> {
-    pub fn new(vocab_data: &[u8], model_data: &'a [u8]) -> Parser<'a> {
-        let fst = Fst::new(vocab_data.to_vec()).unwrap();
-        let tokenizer = Tokenizer::new(&fst);
-        let model = Model::new(model_data).unwrap();
+impl<'a> Parser {
+    pub fn new(packed_model_data: &[u8]) -> Parser {
+        let packed_model: PackedModel = bincode2::deserialize(packed_model_data).unwrap();
+        let model = Model::from(packed_model);
+        let tokenizer = Tokenizer::new(&model.get_vocab());
         Parser { tokenizer, model }
     }
 

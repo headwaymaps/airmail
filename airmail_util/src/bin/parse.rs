@@ -1,16 +1,15 @@
-use std::{fs::File, io::Read};
+use std::fs::File;
 
-use airmail_lib::tokenizer::Tokenizer;
+use airmail_lib::{
+    model::{Model, PackedModel},
+    tagger::Attribute,
+    tokenizer::Tokenizer,
+};
 use clap::Parser;
-use crfsuite::{Attribute, Model};
-use fst::raw::Fst;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    /// The vocabulary file to use.
-    #[clap(long, value_parser)]
-    vocab: String,
     /// The model file to use.
     #[clap(long, value_parser)]
     model: String,
@@ -22,14 +21,11 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let mut vocab_data = vec![];
-    File::open(args.vocab)
-        .unwrap()
-        .read_to_end(&mut vocab_data)
-        .unwrap();
+    let packed: PackedModel = bincode2::deserialize_from(File::open(args.model).unwrap()).unwrap();
+    let model = Model::from(packed);
+    let mut tagger = model.tagger().unwrap();
 
-    let fst = Fst::new(vocab_data).unwrap();
-    let tokenizer = Tokenizer::new(&fst);
+    let tokenizer = Tokenizer::new(&model.get_vocab());
     let features = tokenizer.tokenize(&args.str);
     for word_features in &features {
         let mut word_feature_strings: Vec<String> = word_features
@@ -39,9 +35,6 @@ fn main() {
         word_feature_strings.sort_by(|a, b| b.len().partial_cmp(&a.len()).unwrap());
         println!("{:?}", word_feature_strings);
     }
-
-    let model = Model::from_file(&args.model).unwrap();
-    let mut tagger = model.tagger().unwrap();
 
     let attributes: Vec<Vec<Attribute>> = features
         .iter()
@@ -54,22 +47,20 @@ fn main() {
         })
         .collect();
 
-    tagger.tag(&attributes).unwrap();
-    let viterbi = tagger.viterbi().unwrap();
-    let labels = tagger.labels().unwrap();
-    println!("Parsed as: {:?}", viterbi);
-    for i in 0..attributes.len() {
-        let mut other_probs: Vec<(&String, f64)> = labels
-            .iter()
-            .filter(|label| label != &&viterbi[i])
-            .map(|other_label| (other_label, tagger.marginal(other_label, i as i32).unwrap()))
-            .collect();
-        other_probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        let mut alternate_viterbi = viterbi.clone();
-        alternate_viterbi[i] = other_probs[0].0.to_string();
-        println!(
-            "{} chance of it being {:?}",
-            other_probs[0].1, alternate_viterbi
-        );
-    }
+    let labels = tagger.tag(&attributes).unwrap();
+    println!("Parsed as: {:?}", labels);
+    // for i in 0..attributes.len() {
+    //     let mut other_probs: Vec<(&String, f64)> = labels
+    //         .iter()
+    //         .filter(|label| label != &&viterbi[i])
+    //         .map(|other_label| (other_label, tagger.marginal(other_label, i as i32).unwrap()))
+    //         .collect();
+    //     other_probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    //     let mut alternate_viterbi = viterbi.clone();
+    //     alternate_viterbi[i] = other_probs[0].0.to_string();
+    //     println!(
+    //         "{} chance of it being {:?}",
+    //         other_probs[0].1, alternate_viterbi
+    //     );
+    // }
 }
