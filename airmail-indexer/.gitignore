@@ -1,0 +1,6 @@
+target/
+debug/
+**/*.rs.bk
+Cargo.lock
+*.fst
+*.osm.pbf
