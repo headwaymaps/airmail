@@ -2,7 +2,7 @@ use std::fs::File;
 
 use airmail_indexer::common::process_osm;
 use clap::Parser;
-use fst::SetBuilder;
+use fst::MapBuilder;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -17,9 +17,9 @@ fn save_fst(strs: Vec<String>, path: &str) {
     let mut vec: Vec<String> = strs;
     vec.sort();
     let f = File::create(path).unwrap();
-    let mut builder = SetBuilder::new(f).unwrap();
-    for s in vec {
-        builder.insert(s).unwrap();
+    let mut builder = MapBuilder::new(f).unwrap();
+    for (i, s) in vec.iter().enumerate() {
+        builder.insert(s, i as u64).unwrap();
     }
     builder.finish().unwrap();
 }

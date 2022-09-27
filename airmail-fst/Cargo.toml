@@ -1,0 +1,42 @@
+[package]
+name = "fst"
+version = "0.3.0"
+authors = ["Andrew Gallant <jamslam@gmail.com>"] # forked from Andrew Gallant's work
+description = """
+This is a airmail-specific fork from the fst crate from Burntsushi. (Please use the fst crate instead.)
+"""
+readme = "README.md"
+keywords = ["donotuseme"]
+license = "Unlicense/MIT"
+edition = "2018"
+
+[[bench]]
+name = "build"
+path = "./benches/build.rs"
+test = false
+bench = true
+
+[[bench]]
+name = "search"
+path = "./benches/search.rs"
+test = false
+bench = true
+
+[dependencies]
+byteorder = "1"
+regex-syntax = "0.6"
+utf8-ranges = "1"
+
+[dev-dependencies]
+fnv = "1.0.5"
+lazy_static = "1.4"
+quickcheck = { version = "0.7", default-features = false }
+rand = "0.5"
+proptest = "0.9.4"
+
+[profile.release]
+debug = true
+
+[profile.bench]
+opt-level = 3
+debug = true
