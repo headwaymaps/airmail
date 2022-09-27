@@ -5,10 +5,14 @@ use std::ops::Range;
 
 use byteorder::WriteBytesExt;
 
-use crate::{fake_arr::{FakeArr, FakeArrRef, Ulen, empty}, raw::build::BuilderNode, slic, slic2};
 use crate::raw::common_inputs::{COMMON_INPUTS, COMMON_INPUTS_INV};
 use crate::raw::pack::{pack_size, pack_uint, pack_uint_in, unpack_uint};
 use crate::raw::{u64_to_Ulen, CompiledAddr, Output, Transition, EMPTY_ADDRESS};
+use crate::{
+    fake_arr::{empty, FakeArr, FakeArrRef, Ulen},
+    raw::build::BuilderNode,
+    slic,
+};
 
 /// The threshold (in number of transitions) at which an index is created for
 /// a node's transitions. This speeds up lookup time at the expense of FST
@@ -17,8 +21,8 @@ const TRANS_INDEX_THRESHOLD: Ulen = 32;
 
 /// Node represents a single state in a finite state transducer.
 ///
-/// Nodes are very cheap to construct. Notably, they satisfy the `Copy` trait.
-#[derive(Clone, Copy)]
+/// Nodes are very cheap to construct.
+#[derive(Clone)]
 pub struct Node<'f> {
     data: FakeArrRef<'f>,
     version: u64,
@@ -35,15 +39,10 @@ impl<'f> fmt::Debug for Node<'f> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "NODE@{}", self.start)?;
         writeln!(f, "  end_addr: {}", self.end)?;
-        writeln!(f, "  size: {} bytes", self.as_slice().len())?;
         writeln!(f, "  state: {:?}", self.state)?;
         writeln!(f, "  is_final: {}", self.is_final())?;
         writeln!(f, "  final_output: {:?}", self.final_output())?;
         writeln!(f, "  # transitions: {}", self.len())?;
-        writeln!(f, "  transitions:")?;
-        for t in self.transitions() {
-            writeln!(f, "    {:?}", t)?;
-        }
         Ok(())
     }
 }
@@ -55,9 +54,9 @@ impl<'f> fmt::Debug for Node<'f> {
 /// This is a free function so that we can export it to parent modules, but
 /// not to consumers of this crate.
 #[inline(always)]
-pub fn node_new(version: u64, addr: CompiledAddr, data: FakeArrRef<'_>) -> Node {
+pub async fn node_new<'a>(version: u64, addr: CompiledAddr, data: &'a FakeArrRef<'a>) -> Node<'a> {
     use self::State::*;
-    let state = State::new(data, addr);
+    let state = State::new(data.clone(), addr).await;
     match state {
         EmptyFinal => Node {
             data: empty(),
@@ -71,13 +70,13 @@ pub fn node_new(version: u64, addr: CompiledAddr, data: FakeArrRef<'_>) -> Node 
             final_output: Output::zero(),
         },
         OneTransNext(s) => {
-            let data = slic2!(data[..=addr]);
+            let data = slic!(data[..=addr]);
             Node {
-                data,
+                data: data.clone(),
                 version,
                 state,
                 start: addr,
-                end: s.end_addr(data),
+                end: s.end_addr(data.clone()),
                 is_final: false,
                 sizes: PackSizes::new(),
                 ntrans: 1,
@@ -85,10 +84,10 @@ pub fn node_new(version: u64, addr: CompiledAddr, data: FakeArrRef<'_>) -> Node 
             }
         }
         OneTrans(s) => {
-            let data = slic2!(data[..=addr]);
-            let sizes = s.sizes(data);
+            let data = slic!(data[..=addr]);
+            let sizes = s.sizes(data.clone()).await;
             Node {
-                data,
+                data: data.clone(),
                 version,
                 state,
                 start: addr,
@@ -100,19 +99,20 @@ pub fn node_new(version: u64, addr: CompiledAddr, data: FakeArrRef<'_>) -> Node 
             }
         }
         AnyTrans(s) => {
-            let data = slic2!(data[..=addr]);
-            let sizes = s.sizes(data);
-            let ntrans = s.ntrans(data);
+            let sizes = s.sizes(&slic!(data[..=addr])).await;
+            let ntrans = s.ntrans(&slic!(data[..=addr])).await;
             Node {
-                data,
+                data: slic!(data[..=addr]),
                 version,
                 state,
                 start: addr,
-                end: s.end_addr(version, data, sizes, ntrans),
+                end: s.end_addr(version, slic!(data[..=addr]), sizes, ntrans),
                 is_final: s.is_final_state(),
                 ntrans,
                 sizes,
-                final_output: s.final_output(version, data, sizes, ntrans),
+                final_output: s
+                    .final_output(version, slic!(data[..=addr]), sizes, ntrans)
+                    .await,
             }
         }
     }
@@ -131,13 +131,13 @@ impl<'f> Node<'f> {
 
     /// Returns the transition at index `i`.
     #[inline(always)]
-    pub fn transition(&self, i: Ulen) -> Transition {
+    pub async fn transition(&self, i: Ulen) -> Transition {
         use self::State::*;
         match self.state {
             OneTransNext(s) => {
                 assert_eq!(i, 0);
                 Transition {
-                    inp: s.input(self),
+                    inp: s.input(self).await,
                     out: Output::zero(),
                     addr: s.trans_addr(self),
                 }
@@ -145,15 +145,15 @@ impl<'f> Node<'f> {
             OneTrans(s) => {
                 assert_eq!(i, 0);
                 Transition {
-                    inp: s.input(self),
-                    out: s.output(self),
-                    addr: s.trans_addr(self),
+                    inp: s.input(self).await,
+                    out: s.output(self).await,
+                    addr: s.trans_addr(self).await,
                 }
             }
             AnyTrans(s) => Transition {
-                inp: s.input(self, i),
-                out: s.output(self, i),
-                addr: s.trans_addr(self, i),
+                inp: s.input(self, i).await,
+                out: s.output(self, i).await,
+                addr: s.trans_addr(self, i).await,
             },
             EmptyFinal => panic!("out of bounds"),
         }
@@ -161,7 +161,7 @@ impl<'f> Node<'f> {
 
     /// Returns the transition address of the `i`th transition.
     #[inline(always)]
-    pub fn transition_addr(&self, i: Ulen) -> CompiledAddr {
+    pub async fn transition_addr(&self, i: Ulen) -> CompiledAddr {
         use self::State::*;
         match self.state {
             OneTransNext(s) => {
@@ -170,9 +170,9 @@ impl<'f> Node<'f> {
             }
             OneTrans(s) => {
                 assert_eq!(i, 0);
-                s.trans_addr(self)
+                s.trans_addr(self).await
             }
-            AnyTrans(s) => s.trans_addr(self, i),
+            AnyTrans(s) => s.trans_addr(self, i).await,
             EmptyFinal => panic!("out of bounds"),
         }
     }
@@ -181,14 +181,14 @@ impl<'f> Node<'f> {
     ///
     /// If no transition for this byte exists, then `None` is returned.
     #[inline(always)]
-    pub fn find_input(&self, b: u8) -> Option<Ulen> {
+    pub async fn find_input(&self, b: u8) -> Option<Ulen> {
         use self::State::*;
         match self.state {
-            OneTransNext(s) if s.input(self) == b => Some(0),
+            OneTransNext(s) if s.input(self).await == b => Some(0),
             OneTransNext(_) => None,
-            OneTrans(s) if s.input(self) == b => Some(0),
+            OneTrans(s) if s.input(self).await == b => Some(0),
             OneTrans(_) => None,
-            AnyTrans(s) => s.find_input(self, b),
+            AnyTrans(s) => s.find_input(self, b).await,
             EmptyFinal => None,
         }
     }
@@ -229,8 +229,8 @@ impl<'f> Node<'f> {
 
     #[doc(hidden)]
     #[inline(always)]
-    pub fn as_slice(&self) -> Vec<u8> {
-        slic!(self.data[(self.end)..]).to_vec()
+    pub async fn as_slice(&self) -> Vec<u8> {
+        slic!(self.data[(self.end)..]).to_vec().await
     }
 
     #[doc(hidden)]
@@ -295,12 +295,12 @@ struct StateAnyTrans(u8);
 
 impl State {
     #[inline(always)]
-    fn new(data: FakeArrRef<'_>, addr: CompiledAddr) -> State {
+    async fn new(data: FakeArrRef<'_>, addr: CompiledAddr) -> State {
         use self::State::*;
         if addr == EMPTY_ADDRESS {
             return EmptyFinal;
         }
-        let v = slic!(data[addr]);
+        let v = data.get_byte(addr).await;
         match (v & 0b11_000000) >> 6 {
             0b11 => OneTransNext(StateOneTransNext(v)),
             0b10 => OneTrans(StateOneTrans(v)),
@@ -348,11 +348,11 @@ impl StateOneTransNext {
     }
 
     #[inline(always)]
-    fn input(self, node: &Node) -> u8 {
+    async fn input<'a>(self, node: &'a Node<'a>) -> u8 {
         if let Some(inp) = self.common_input() {
             inp
         } else {
-            slic!(node.data[(node.start - 1)])
+            node.data.get_byte(node.start - 1).await
         }
     }
 
@@ -408,9 +408,9 @@ impl StateOneTrans {
     }
 
     #[inline(always)]
-    fn sizes(self, data: FakeArrRef) -> PackSizes {
+    async fn sizes(self, data: FakeArrRef<'_>) -> PackSizes {
         let i = data.len() - 1 - self.input_len() - 1;
-        PackSizes::decode(slic!(data[i]))
+        PackSizes::decode(data.get_byte(i).await)
     }
 
     #[inline(always)]
@@ -423,16 +423,16 @@ impl StateOneTrans {
     }
 
     #[inline(always)]
-    fn input(self, node: &Node) -> u8 {
+    async fn input<'a>(self, node: &'a Node<'a>) -> u8 {
         if let Some(inp) = self.common_input() {
             inp
         } else {
-            slic!(node.data[(node.start - 1)])
+            node.data.get_byte(node.start - 1).await
         }
     }
 
     #[inline(always)]
-    fn output(self, node: &Node) -> Output {
+    async fn output<'a>(self, node: &'a Node<'a>) -> Output {
         let osize = node.sizes.output_pack_size();
         if osize == 0 {
             return Output::zero();
@@ -442,17 +442,17 @@ impl StateOneTrans {
                 - self.input_len()
                 - 1 // pack size
                 - tsize - osize;
-        Output::new(unpack_uint(slic!(node.data[i..]), osize as u8))
+        Output::new(unpack_uint(slic!(node.data[i..]), osize as u8).await)
     }
 
     #[inline(always)]
-    fn trans_addr(self, node: &Node) -> CompiledAddr {
+    async fn trans_addr<'a>(self, node: &'a Node<'a>) -> CompiledAddr {
         let tsize = node.sizes.transition_pack_size();
         let i = node.start
                 - self.input_len()
                 - 1 // pack size
                 - tsize;
-        unpack_delta(slic!(node.data[i..]), tsize, node.end)
+        unpack_delta(slic!(node.data[i..]), tsize, node.end).await
     }
 }
 
@@ -554,9 +554,9 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn sizes(self, data: FakeArrRef) -> PackSizes {
+    async fn sizes<'a>(self, data: &'a FakeArr<'a>) -> PackSizes {
         let i = data.len() - 1 - self.ntrans_len() - 1;
-        PackSizes::decode(slic!(data[i]))
+        PackSizes::decode(data.get_byte(i).await)
     }
 
     #[inline(always)]
@@ -584,11 +584,11 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn ntrans(self, data: FakeArrRef) -> Ulen {
+    async fn ntrans<'a>(self, data: &'a FakeArr<'a>) -> Ulen {
         if let Some(n) = self.state_ntrans() {
             n as Ulen
         } else {
-            let n = slic!(data[(data.len() - 2)]) as Ulen;
+            let n = data.get_byte(data.len() - 2).await as Ulen;
             if n == 1 {
                 // "1" is never a normal legal value here, because if there
                 // is only 1 transition, then it is encoded in the state byte.
@@ -600,7 +600,13 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn final_output(self, version: u64, data: FakeArrRef, sizes: PackSizes, ntrans: Ulen) -> Output {
+    async fn final_output(
+        self,
+        version: u64,
+        data: FakeArrRef<'_>,
+        sizes: PackSizes,
+        ntrans: Ulen,
+    ) -> Output {
         let osize = sizes.output_pack_size();
         if osize == 0 || !self.is_final_state() {
             return Output::zero();
@@ -611,7 +617,7 @@ impl StateAnyTrans {
                  - self.total_trans_size(version, sizes, ntrans)
                  - (ntrans * osize) // output values
                  - osize; // the desired output value
-        Output::new(unpack_uint(slic!(data[at..]), osize as u8))
+        Output::new(unpack_uint(slic!(data[at..]), osize as u8).await)
     }
 
     #[inline(always)]
@@ -627,7 +633,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn trans_addr(self, node: &Node, i: Ulen) -> CompiledAddr {
+    async fn trans_addr<'a>(self, node: &'a Node<'a>, i: Ulen) -> CompiledAddr {
         assert!(i < node.ntrans);
         let tsize = node.sizes.transition_pack_size();
         let at = node.start
@@ -637,28 +643,28 @@ impl StateAnyTrans {
                  - node.ntrans // inputs
                  - (i * tsize) // the previous transition addresses
                  - tsize; // the desired transition address
-        unpack_delta(slic!(node.data[at..]), tsize, node.end)
+        unpack_delta(slic!(node.data[at..]), tsize, node.end).await
     }
 
     #[inline(always)]
-    fn input(self, node: &Node, i: Ulen) -> u8 {
+    async fn input<'a>(self, node: &'a Node<'a>, i: Ulen) -> u8 {
         let at = node.start
                  - self.ntrans_len()
                  - 1 // pack size
                  - self.trans_index_size(node.version, node.ntrans)
                  - i
                  - 1; // the input byte
-        slic!(node.data[at])
+        node.data.get_byte(at).await
     }
 
     #[inline(always)]
-    fn find_input(self, node: &Node, b: u8) -> Option<Ulen> {
+    async fn find_input<'a>(self, node: &'a Node<'a>, b: u8) -> Option<Ulen> {
         if node.version >= 2 && node.ntrans > TRANS_INDEX_THRESHOLD {
             let start = node.start
                         - self.ntrans_len()
                         - 1 // pack size
                         - self.trans_index_size(node.version, node.ntrans);
-            let i = node.data.get_byte((start + b as Ulen)) as Ulen;
+            let i = node.data.get_byte((start + b as Ulen)).await as Ulen;
             if i >= node.ntrans {
                 None
             } else {
@@ -672,7 +678,7 @@ impl StateAnyTrans {
             let end = start + node.ntrans;
             let inputs = slic!(node.data[start..end]);
             for i in 0..inputs.len() {
-                if inputs.get_byte(i) == b {
+                if inputs.get_byte(i).await == b {
                     return Some(node.ntrans - i - 1);
                 }
             }
@@ -681,7 +687,7 @@ impl StateAnyTrans {
     }
 
     #[inline(always)]
-    fn output(self, node: &Node, i: Ulen) -> Output {
+    async fn output<'a>(self, node: &'a Node<'a>, i: Ulen) -> Output {
         let osize = node.sizes.output_pack_size();
         if osize == 0 {
             return Output::zero();
@@ -692,7 +698,7 @@ impl StateAnyTrans {
                  - self.total_trans_size(node.version, node.sizes, node.ntrans)
                  - (i * osize) // the previous outputs
                  - osize; // the desired output value
-        Output::new(unpack_uint(slic!(node.data[at..]), osize as u8))
+        Output::new(unpack_uint(slic!(node.data[at..]), osize as u8).await)
     }
 }
 
@@ -749,15 +755,6 @@ impl PackSizes {
 pub struct Transitions<'f: 'n, 'n> {
     node: &'n Node<'f>,
     range: Range<Ulen>,
-}
-
-impl<'f, 'n> Iterator for Transitions<'f, 'n> {
-    type Item = Transition;
-
-    #[inline]
-    fn next(&mut self) -> Option<Transition> {
-        self.range.next().map(|i| self.node.transition(i))
-    }
 }
 
 /// common_idx translate a byte to an index in the COMMON_INPUTS_INV array.
@@ -825,8 +822,12 @@ fn pack_delta_size(node_addr: CompiledAddr, trans_addr: CompiledAddr) -> u8 {
 }
 
 #[inline(always)]
-fn unpack_delta(slice: FakeArrRef<'_>, trans_pack_size: Ulen, node_addr: Ulen) -> CompiledAddr {
-    let delta = unpack_uint(slice, trans_pack_size as u8);
+async fn unpack_delta(
+    slice: FakeArrRef<'_>,
+    trans_pack_size: Ulen,
+    node_addr: Ulen,
+) -> CompiledAddr {
+    let delta = unpack_uint(slice, trans_pack_size as u8).await;
     let delta_addr = u64_to_Ulen(delta);
     if delta_addr == EMPTY_ADDRESS {
         EMPTY_ADDRESS
@@ -839,12 +840,28 @@ fn unpack_delta(slice: FakeArrRef<'_>, trans_pack_size: Ulen, node_addr: Ulen) -
 mod tests {
     use quickcheck::{quickcheck, TestResult};
 
-    use crate::{fake_arr::{FakeArr, Ulen, slice_to_fake_arr}, raw::build::BuilderNode};
     use crate::raw::node::{node_new, Node};
     use crate::raw::{Builder, CompiledAddr, Fst, Output, Transition, VERSION};
     use crate::stream::Streamer;
+    use crate::{
+        fake_arr::{local_slice_to_fake_arr, FakeArr, Ulen},
+        raw::build::BuilderNode,
+    };
+
+    use super::Transitions;
 
     const NEVER_LAST: CompiledAddr = ::std::u64::MAX as CompiledAddr;
+
+    impl<'f, 'n> Iterator for Transitions<'f, 'n> {
+        type Item = Transition;
+
+        #[inline]
+        fn next(&mut self) -> Option<Transition> {
+            self.range
+                .next()
+                .map(|i| tokio_test::block_on(self.node.transition(i)))
+        }
+    }
 
     #[test]
     fn prop_emits_inputs() {
@@ -856,11 +873,11 @@ mod tests {
             for word in &bs {
                 bfst.add(word).unwrap();
             }
-            let fst = Fst::new(bfst.into_inner().unwrap()).unwrap();
+            let fst = Fst::new_from_vec(&bfst.into_inner().unwrap()).unwrap();
             let mut rdr = fst.stream();
             let mut words = vec![];
-            while let Some(w) = rdr.next() {
-                words.push(w.0.to_vec());
+            while let Some(w) = tokio_test::block_on(rdr.next()) {
+                words.push(tokio_test::block_on(w.0.to_vec()));
             }
             TestResult::from_bool(bs == words)
         }
@@ -888,7 +905,7 @@ mod tests {
 
     fn roundtrip(bnode: &BuilderNode) -> bool {
         let (addr, bytes) = compile(bnode);
-        let node = node_new(VERSION, addr, slice_to_fake_arr(&bytes));
+        let node = tokio_test::block_on(node_new(VERSION, addr, &local_slice_to_fake_arr(&bytes)));
         nodes_equal(&node, &bnode)
     }
 
@@ -908,8 +925,8 @@ mod tests {
             trans: vec![],
         };
         let (addr, buf) = compile(&bnode);
-        let node = node_new(VERSION, addr, slice_to_fake_arr(&buf));
-        assert_eq!(node.as_slice().len(), 3);
+        let node = tokio_test::block_on(node_new(VERSION, addr, &local_slice_to_fake_arr(&buf)));
+        assert_eq!(tokio_test::block_on(node.as_slice()).len(), 3);
         roundtrip(&bnode);
     }
 
@@ -921,8 +938,8 @@ mod tests {
             trans: vec![trans(20, b'a')],
         };
         let (addr, buf) = compile(&bnode);
-        let node = node_new(VERSION, addr, slice_to_fake_arr(&buf));
-        assert_eq!(node.as_slice().len(), 3);
+        let node = tokio_test::block_on(node_new(VERSION, addr, &local_slice_to_fake_arr(&buf)));
+        assert_eq!(tokio_test::block_on(node.as_slice()).len(), 3);
         roundtrip(&bnode);
     }
 
@@ -934,8 +951,8 @@ mod tests {
             trans: vec![trans(2, b'\xff')],
         };
         let (addr, buf) = compile(&bnode);
-        let node = node_new(VERSION, addr, slice_to_fake_arr(&buf));
-        assert_eq!(node.as_slice().len(), 4);
+        let node = tokio_test::block_on(node_new(VERSION, addr, &local_slice_to_fake_arr(&buf)));
+        assert_eq!(tokio_test::block_on(node.as_slice()).len(), 4);
         roundtrip(&bnode);
     }
 
@@ -954,8 +971,8 @@ mod tests {
             ],
         };
         let (addr, buf) = compile(&bnode);
-        let node = node_new(VERSION, addr, slice_to_fake_arr(&buf));
-        assert_eq!(node.as_slice().len(), 14);
+        let node = tokio_test::block_on(node_new(VERSION, addr, &local_slice_to_fake_arr(&buf)));
+        assert_eq!(tokio_test::block_on(node.as_slice()).len(), 14);
         roundtrip(&bnode);
     }
 
@@ -967,7 +984,7 @@ mod tests {
             trans: (0..256).map(|i| trans(0, i as u8)).collect(),
         };
         let (addr, buf) = compile(&bnode);
-        let node = node_new(VERSION, addr, slice_to_fake_arr(&buf));
+        let node = tokio_test::block_on(node_new(VERSION, addr, &local_slice_to_fake_arr(&buf)));
         assert_eq!(node.transitions().count(), 256);
         assert_eq!(node.len(), node.transitions().count() as Ulen);
         roundtrip(&bnode);

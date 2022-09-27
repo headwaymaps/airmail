@@ -2,11 +2,17 @@ use std::fmt;
 use std::io;
 use std::iter::FromIterator;
 
-use crate::{automaton::{AlwaysMatch, Automaton}, fake_arr::{FakeArr, FakeArrRef, Ulen}};
+use async_trait::async_trait;
+
+use crate::fake_arr::FakeArrRef;
 use crate::raw;
 pub use crate::raw::IndexedValue;
 use crate::stream::{IntoStreamer, Streamer};
 use crate::Result;
+use crate::{
+    automaton::{AlwaysMatch, Automaton},
+    fake_arr::{FakeArr, Ulen},
+};
 use std::ops::Deref;
 
 /// Map is a lexicographically ordered map from byte strings to integers.
@@ -53,9 +59,9 @@ use std::ops::Deref;
 /// Keys will always be byte strings; however, we may grow more conveniences
 /// around dealing with them (such as a serialization/deserialization step,
 /// although it isn't clear where exactly this should live).
-pub struct Map<Data: FakeArr>(raw::Fst<Data>);
+pub struct Map<'a>(raw::Fst<'a>);
 
-impl<Data: FakeArr> Map<Data> {
+impl<'m> Map<'m> {
     /// Tests the membership of a single key.
     ///
     /// # Example
@@ -68,8 +74,8 @@ impl<Data: FakeArr> Map<Data> {
     /// assert_eq!(map.contains_key("b"), true);
     /// assert_eq!(map.contains_key("z"), false);
     /// ```
-    pub fn contains_key<K: AsRef<[u8]>>(&self, key: K) -> bool {
-        self.0.contains_key(key)
+    pub async fn contains_key<K: AsRef<[u8]>>(&self, key: K) -> bool {
+        self.0.contains_key(key).await
     }
 
     /// Retrieves the value associated with a key.
@@ -86,8 +92,12 @@ impl<Data: FakeArr> Map<Data> {
     /// assert_eq!(map.get("b"), Some(2));
     /// assert_eq!(map.get("z"), None);
     /// ```
-    pub fn get<K: AsRef<[u8]>>(&self, key: K) -> Option<u64> {
-        self.0.get(key).map(|output| output.value())
+    pub async fn get<K: AsRef<[u8]>>(&self, key: K) -> Option<u64> {
+        if let Some(val) = self.0.get(key).await {
+            Some(val.value())
+        } else {
+            None
+        }
     }
 
     /// Return a lexicographically ordered stream of all key-value pairs in
@@ -318,44 +328,35 @@ impl<Data: FakeArr> Map<Data> {
 
     /// Returns a reference to the underlying raw finite state transducer.
     #[inline]
-    pub fn as_fst(&self) -> &raw::Fst<Data> {
+    pub fn as_fst(&self) -> &raw::Fst {
         &self.0
     }
 }
 
-impl<Data: FakeArr> fmt::Debug for Map<Data> {
+impl<'m> fmt::Debug for Map<'m> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Map([")?;
-        let mut stream = self.stream();
-        let mut first = true;
-        while let Some((k, v)) = stream.next() {
-            if !first {
-                write!(f, ", ")?;
-            }
-            first = false;
-            write!(f, "({}, {})", String::from_utf8_lossy(&k.actually_read_it()), v)?;
-        }
         write!(f, "])")
     }
 }
 
 // Construct a map from an Fst object.
-impl<Data: FakeArr> From<raw::Fst<Data>> for Map<Data> {
+impl<'m> From<raw::Fst<'m>> for Map<'m> {
     #[inline]
-    fn from(fst: raw::Fst<Data>) -> Self {
+    fn from(fst: raw::Fst) -> Self {
         Map(fst)
     }
 }
 
 /// Returns the underlying finite state transducer.
-impl<Data: FakeArr> AsRef<raw::Fst<Data>> for Map<Data> {
-    #[inline]
-    fn as_ref(&self) -> &raw::Fst<Data> {
-        &self.0
-    }
-}
+// impl<'m> AsRef<raw::Fst<'m>> for Map<'m> {
+//     #[inline]
+//     fn as_ref(&self) -> &raw::Fst {
+//         &self.0
+//     }
+// }
 
-impl<'m, 'a, Data: FakeArr> IntoStreamer<'a> for &'m Map<Data> {
+impl<'m, 'a> IntoStreamer<'a> for &'m Map<'m> {
     type Item = (FakeArrRef<'a>, u64);
     type Into = Stream<'m>;
 
@@ -479,12 +480,14 @@ impl<W: io::Write> MapBuilder<W> {
     /// If a key is inserted that is less than or equal to any previous key
     /// added, then an error is returned. Similarly, if there was a problem
     /// writing to the underlying writer, an error is returned.
-    pub fn extend_stream<'f, I, S>(&mut self, stream: I) -> Result<()>
+    pub async fn extend_stream<'f, I, S>(&mut self, stream: I) -> Result<()>
     where
         I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, u64)>,
         S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, u64)>,
     {
-        self.0.extend_stream(StreamOutput(stream.into_stream()))
+        self.0
+            .extend_stream(StreamOutput(stream.into_stream()))
+            .await
     }
 
     /// Finishes the construction of the map and flushes the underlying
@@ -521,11 +524,16 @@ pub struct Stream<'m, A = AlwaysMatch>(raw::Stream<'m, A>)
 where
     A: Automaton;
 
+#[async_trait(?Send)]
 impl<'a, 'm, A: Automaton> Streamer<'a> for Stream<'m, A> {
     type Item = (FakeArrRef<'a>, u64);
 
-    fn next(&'a mut self) -> Option<Self::Item> {
-        self.0.next().map(|(key, out)| (key, out.value()))
+    async fn next(&'a mut self) -> Option<Self::Item> {
+        if let Some((key, out)) = self.0.next().await {
+            Some((key, out.value()))
+        } else {
+            None
+        }
     }
 }
 
@@ -533,8 +541,8 @@ impl<'m, A: Automaton> Stream<'m, A> {
     /// Convert this stream into a vector of byte strings and outputs.
     ///
     /// Note that this creates a new allocation for every key in the stream.
-    pub fn into_byte_vec(self) -> Vec<(Vec<u8>, u64)> {
-        self.0.into_byte_vec()
+    pub async fn into_byte_vec(self) -> Vec<(Vec<u8>, u64)> {
+        self.0.into_byte_vec().await
     }
 
     /// Convert this stream into a vector of Unicode strings and outputs.
@@ -543,15 +551,15 @@ impl<'m, A: Automaton> Stream<'m, A> {
     /// and a UTF-8 decoding error is returned.
     ///
     /// Note that this creates a new allocation for every key in the stream.
-    pub fn into_str_vec(self) -> Result<Vec<(String, u64)>> {
-        self.0.into_str_vec()
+    pub async fn into_str_vec(self) -> Result<Vec<(String, u64)>> {
+        self.0.into_str_vec().await
     }
 
     /// Convert this stream into a vector of byte strings.
     ///
     /// Note that this creates a new allocation for every key in the stream.
-    pub fn into_byte_keys(self) -> Vec<Vec<u8>> {
-        self.0.into_byte_keys()
+    pub async fn into_byte_keys(self) -> Vec<Vec<u8>> {
+        self.0.into_byte_keys().await
     }
 
     /// Convert this stream into a vector of Unicode strings.
@@ -560,13 +568,13 @@ impl<'m, A: Automaton> Stream<'m, A> {
     /// and a UTF-8 decoding error is returned.
     ///
     /// Note that this creates a new allocation for every key in the stream.
-    pub fn into_str_keys(self) -> Result<Vec<String>> {
-        self.0.into_str_keys()
+    pub async fn into_str_keys(self) -> Result<Vec<String>> {
+        self.0.into_str_keys().await
     }
 
     /// Convert this stream into a vector of outputs.
-    pub fn into_values(self) -> Vec<u64> {
-        self.0.into_values()
+    pub async fn into_values(self) -> Vec<u64> {
+        self.0.into_values().await
     }
 }
 
@@ -575,12 +583,17 @@ impl<'m, A: Automaton> Stream<'m, A> {
 /// The `'m` lifetime parameter refers to the lifetime of the underlying map.
 pub struct Keys<'m>(raw::Stream<'m>);
 
+#[async_trait(?Send)]
 impl<'a, 'm> Streamer<'a> for Keys<'m> {
     type Item = FakeArrRef<'a>;
 
     #[inline]
-    fn next(&'a mut self) -> Option<Self::Item> {
-        self.0.next().map(|(key, _)| key)
+    async fn next(&'a mut self) -> Option<Self::Item> {
+        if let Some((key, _)) = self.0.next().await {
+            Some(key)
+        } else {
+            None
+        }
     }
 }
 
@@ -590,12 +603,17 @@ impl<'a, 'm> Streamer<'a> for Keys<'m> {
 /// The `'m` lifetime parameter refers to the lifetime of the underlying map.
 pub struct Values<'m>(raw::Stream<'m>);
 
+#[async_trait(?Send)]
 impl<'a, 'm> Streamer<'a> for Values<'m> {
     type Item = u64;
 
     #[inline]
-    fn next(&'a mut self) -> Option<Self::Item> {
-        self.0.next().map(|(_, out)| out.value())
+    async fn next(&'a mut self) -> Option<Self::Item> {
+        if let Some((_, out)) = self.0.next().await {
+            Some(out.value())
+        } else {
+            None
+        }
     }
 }
 
@@ -947,12 +965,13 @@ where
 /// The `'m` lifetime parameter refers to the lifetime of the underlying map.
 pub struct Union<'m>(raw::Union<'m>);
 
+#[async_trait(?Send)]
 impl<'a, 'm> Streamer<'a> for Union<'m> {
     type Item = (FakeArrRef<'a>, &'a [IndexedValue]);
 
     #[inline]
-    fn next(&'a mut self) -> Option<Self::Item> {
-        self.0.next()
+    async fn next(&'a mut self) -> Option<Self::Item> {
+        self.0.next().await
     }
 }
 
@@ -962,12 +981,13 @@ impl<'a, 'm> Streamer<'a> for Union<'m> {
 /// The `'m` lifetime parameter refers to the lifetime of the underlying map.
 pub struct Intersection<'m>(raw::Intersection<'m>);
 
+#[async_trait(?Send)]
 impl<'a, 'm> Streamer<'a> for Intersection<'m> {
     type Item = (FakeArrRef<'a>, &'a [IndexedValue]);
 
     #[inline]
-    fn next(&'a mut self) -> Option<Self::Item> {
-        self.0.next()
+    async fn next(&'a mut self) -> Option<Self::Item> {
+        self.0.next().await
     }
 }
 
@@ -981,12 +1001,13 @@ impl<'a, 'm> Streamer<'a> for Intersection<'m> {
 /// The `'m` lifetime parameter refers to the lifetime of the underlying map.
 pub struct Difference<'m>(raw::Difference<'m>);
 
+#[async_trait(?Send)]
 impl<'a, 'm> Streamer<'a> for Difference<'m> {
     type Item = (&'a [u8], &'a [IndexedValue]);
 
     #[inline]
-    fn next(&'a mut self) -> Option<Self::Item> {
-        self.0.next()
+    async fn next(&'a mut self) -> Option<Self::Item> {
+        self.0.next().await
     }
 }
 
@@ -996,12 +1017,13 @@ impl<'a, 'm> Streamer<'a> for Difference<'m> {
 /// The `'m` lifetime parameter refers to the lifetime of the underlying map.
 pub struct SymmetricDifference<'m>(raw::SymmetricDifference<'m>);
 
+#[async_trait(?Send)]
 impl<'a, 'm> Streamer<'a> for SymmetricDifference<'m> {
     type Item = (&'a [u8], &'a [IndexedValue]);
 
     #[inline]
-    fn next(&'a mut self) -> Option<Self::Item> {
-        self.0.next()
+    async fn next(&'a mut self) -> Option<Self::Item> {
+        self.0.next().await
     }
 }
 
@@ -1012,14 +1034,19 @@ impl<'a, 'm> Streamer<'a> for SymmetricDifference<'m> {
 /// requires HKT, so we need to write out the monomorphization ourselves.
 struct StreamOutput<S>(S);
 
+#[async_trait(?Send)]
 impl<'a, S> Streamer<'a> for StreamOutput<S>
 where
     S: Streamer<'a, Item = (FakeArrRef<'a>, u64)>,
 {
     type Item = (FakeArrRef<'a>, raw::Output);
 
-    fn next(&'a mut self) -> Option<Self::Item> {
-        self.0.next().map(|(k, v)| (k, raw::Output::new(v)))
+    async fn next(&'a mut self) -> Option<Self::Item> {
+        if let Some((k, v)) = self.0.next().await {
+            Some((k, raw::Output::new(v)))
+        } else {
+            None
+        }
     }
 }
 
@@ -1031,15 +1058,18 @@ pub struct StreamWithState<'m, A = AlwaysMatch>(raw::StreamWithState<'m, A>)
 where
     A: Automaton;
 
+#[async_trait(?Send)]
 impl<'a, 'm, A: 'a + Automaton> Streamer<'a> for StreamWithState<'m, A>
 where
     A::State: Clone,
 {
     type Item = (FakeArrRef<'a>, u64, A::State);
 
-    fn next(&'a mut self) -> Option<Self::Item> {
-        self.0
-            .next()
-            .map(|(key, out, state)| (key, out.value(), state))
+    async fn next(&'a mut self) -> Option<Self::Item> {
+        if let Some((key, out, state)) = self.0.next().await {
+            Some((key, out.value(), state))
+        } else {
+            None
+        }
     }
 }

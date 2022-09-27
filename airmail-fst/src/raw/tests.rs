@@ -1,11 +1,14 @@
-use crate::{automaton::AlwaysMatch, fake_arr::{FakeArr, FakeArrRef}};
 use crate::error::Error;
 use crate::inner_automaton::Automaton;
 use crate::raw::{self, Bound, Buffer, Builder, Fst, Output, Stream, VERSION};
+use crate::slic;
 use crate::stream::Streamer;
+use crate::{
+    automaton::AlwaysMatch,
+    fake_arr::{FakeArr, FakeArrRef},
+};
 use crate::{IntoStreamer, Regex};
 use std::ops::Deref;
-use crate::slic;
 
 const TEXT: &'static str = include_str!("./../../data/words-100000");
 
@@ -321,7 +324,6 @@ fn to_mem(v: (FakeArrRef<'_>, raw::Output)) -> (Vec<u8>, raw::Output) {
         assert_eq!(rdr.next(), None);
     }
 }*/
-
 
 test_range! {
     fst_range_empty_1,
@@ -661,7 +663,10 @@ fn test_return_node_on_reverse_only_if_match() {
     let fst: Fst = fst_map(items.clone()).into();
     let automaton = Regex::new("ab").unwrap();
     let mut stream = fst.search(automaton).backward().into_stream();
-    assert_eq!(stream.next().map(to_mem), Some((b"ab"[..].to_vec(), Output::new(1u64))));
+    assert_eq!(
+        stream.next().map(to_mem),
+        Some((b"ab"[..].to_vec(), Output::new(1u64)))
+    );
     assert_eq!(stream.next().map(to_mem), None);
 }
 
@@ -822,7 +827,10 @@ fn test_simple() {
         Bound::Included(b"a".to_vec()),
         true,
     );
-    assert_eq!(stream.next().map(to_mem), Some((b""[..].to_vec(), Output::new(0u64))));
+    assert_eq!(
+        stream.next().map(to_mem),
+        Some((b""[..].to_vec(), Output::new(0u64)))
+    );
     assert!(stream.next().is_none());
 }
 
@@ -951,7 +959,8 @@ macro_rules! test_range_with_aut {
                 .collect();
             let fst: Fst = fst_map(items.clone()).into();
             {
-                let mut rdr = Stream::new(&fst.meta, fst.data.full_slice(), $aut, $min, $max, false);
+                let mut rdr =
+                    Stream::new(&fst.meta, fst.data.full_slice(), $aut, $min, $max, false);
                 for i in $imin..$imax {
                     assert_eq!(
                         to_mem(rdr.next().unwrap()),

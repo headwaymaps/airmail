@@ -2,14 +2,17 @@ use std::io::{self, Write};
 
 use byteorder::{LittleEndian, WriteBytesExt};
 
-use crate::{error::Result, fake_arr::{FakeArrRef, Ulen}};
 use crate::raw::counting_writer::CountingWriter;
 use crate::raw::error::Error;
 use crate::raw::registry::{Registry, RegistryEntry};
 use crate::raw::{CompiledAddr, FstType, Output, Transition, EMPTY_ADDRESS, NONE_ADDRESS, VERSION};
+use crate::{
+    error::Result,
+    fake_arr::{FakeArrRef, Ulen},
+};
 // use raw::registry_minimal::{Registry, RegistryEntry};
-use crate::stream::{IntoStreamer, Streamer};
 use crate::fake_arr::FakeArr;
+use crate::stream::{IntoStreamer, Streamer};
 
 /// A builder for creating a finite state transducer.
 ///
@@ -183,14 +186,14 @@ impl<W: io::Write> Builder<W> {
     /// If a key is inserted that is less than or equal to any previous key
     /// added, then an error is returned. Similarly, if there was a problem
     /// writing to the underlying writer, an error is returned.
-    pub fn extend_stream<'f, I, S>(&mut self, stream: I) -> Result<()>
+    pub async fn extend_stream<'f, I, S>(&mut self, stream: I) -> Result<()>
     where
         I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, Output)>,
         S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Output)>,
     {
         let mut stream = stream.into_stream();
-        while let Some((key, out)) = stream.next() {
-            self.insert(key.actually_read_it(), out.value())?;
+        while let Some((key, out)) = stream.next().await {
+            self.insert(key.actually_read_it().await, out.value())?;
         }
         Ok(())
     }

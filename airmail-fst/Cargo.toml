@@ -26,6 +26,7 @@ bench = true
 byteorder = "1"
 regex-syntax = "0.6"
 utf8-ranges = "1"
+async-trait = "0.1.57"
 
 [dev-dependencies]
 fnv = "1.0.5"
@@ -33,6 +34,8 @@ lazy_static = "1.4"
 quickcheck = { version = "0.7", default-features = false }
 rand = "0.5"
 proptest = "0.9.4"
+tokio = { version = "1.21.2", features = ["full"] }
+tokio-test = "0.4.2"
 
 [profile.release]
 debug = true

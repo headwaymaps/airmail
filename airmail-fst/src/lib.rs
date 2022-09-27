@@ -13,11 +13,11 @@ pub use crate::error::{Error, Result};
 pub use crate::map::{Map, MapBuilder};
 pub use crate::stream::{IntoStreamer, Streamer};
 
-mod regex;
 mod fake_arr;
+mod regex;
 
 pub use self::regex::Regex;
-pub use fake_arr::{FakeArr, ShRange, FakeArrSlice, Ulen};
+pub use fake_arr::{FakeArr, ShRange, Ulen};
 
 mod error;
 #[path = "automaton/mod.rs"]

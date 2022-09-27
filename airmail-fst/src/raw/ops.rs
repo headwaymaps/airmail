@@ -2,8 +2,13 @@ use std::cmp;
 use std::collections::BinaryHeap;
 use std::iter::FromIterator;
 
-use crate::{fake_arr::{FakeArr, FakeArrRef, Ulen, slice_to_fake_arr}, raw::Output};
+use async_trait::async_trait;
+
 use crate::stream::{IntoStreamer, Streamer};
+use crate::{
+    fake_arr::{local_slice_to_fake_arr, FakeArr, FakeArrRef, Ulen},
+    raw::Output,
+};
 
 /// Permits stream operations to be hetergeneous with respect to streams.
 type BoxedStream<'f> = Box<dyn for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Output)> + 'f>;
@@ -202,10 +207,11 @@ pub struct Union<'f> {
     cur_slot: Option<Slot>,
 }
 
+#[async_trait(?Send)]
 impl<'a, 'f> Streamer<'a> for Union<'f> {
     type Item = (FakeArrRef<'a>, &'a [IndexedValue]);
 
-    fn next(&'a mut self) -> Option<Self::Item> {
+    async fn next(&'a mut self) -> Option<Self::Item> {
         if let Some(slot) = self.cur_slot.take() {
             self.heap.refill(slot);
         }
@@ -222,7 +228,7 @@ impl<'a, 'f> Streamer<'a> for Union<'f> {
             self.outs.push(slot2.indexed_value());
             self.heap.refill(slot2);
         }
-        Some((slice_to_fake_arr(slot.input()), &self.outs))
+        Some((local_slice_to_fake_arr(slot.input()), &self.outs))
     }
 }
 
@@ -236,10 +242,11 @@ pub struct Intersection<'f> {
     cur_slot: Option<Slot>,
 }
 
+#[async_trait(?Send)]
 impl<'a, 'f> Streamer<'a> for Intersection<'f> {
     type Item = (FakeArrRef<'a>, &'a [IndexedValue]);
 
-    fn next(&'a mut self) -> Option<Self::Item> {
+    async fn next(&'a mut self) -> Option<Self::Item> {
         if let Some(slot) = self.cur_slot.take() {
             self.heap.refill(slot);
         }
@@ -261,7 +268,6 @@ impl<'a, 'f> Streamer<'a> for Intersection<'f> {
             } else {
                 self.cur_slot = Some(slot);
                 let key = self.cur_slot.as_ref().unwrap().input();
-                return Some((slice_to_fake_arr(key), &self.outs));
             }
         }
     }
@@ -282,16 +288,17 @@ pub struct Difference<'f> {
     outs: Vec<IndexedValue>,
 }
 
+#[async_trait(?Send)]
 impl<'a, 'f> Streamer<'a> for Difference<'f> {
     type Item = (&'a [u8], &'a [IndexedValue]);
 
-    fn next(&'a mut self) -> Option<Self::Item> {
+    async fn next(&'a mut self) -> Option<Self::Item> {
         loop {
-            match self.set.next() {
+            match self.set.next().await {
                 None => return None,
                 Some((key, out)) => {
                     self.key.clear();
-                    self.key.extend(key.actually_read_it());
+                    self.key.extend(key.actually_read_it().await);
                     self.outs.clear();
                     self.outs.push(IndexedValue {
                         index: 0,
@@ -323,10 +330,11 @@ pub struct SymmetricDifference<'f> {
     cur_slot: Option<Slot>,
 }
 
+#[async_trait(?Send)]
 impl<'a, 'f> Streamer<'a> for SymmetricDifference<'f> {
     type Item = (&'a [u8], &'a [IndexedValue]);
 
-    fn next(&'a mut self) -> Option<Self::Item> {
+    async fn next(&'a mut self) -> Option<Self::Item> {
         if let Some(slot) = self.cur_slot.take() {
             self.heap.refill(slot);
         }
@@ -401,9 +409,9 @@ impl<'f> StreamHeap<'f> {
         self.rdrs.len() as Ulen
     }
 
-    fn refill(&mut self, mut slot: Slot) {
-        if let Some((input, output)) = self.rdrs[slot.idx as usize].next() {
-            slot.set_input(&input.actually_read_it());
+    async fn refill(&mut self, mut slot: Slot) {
+        if let Some((input, output)) = self.rdrs[slot.idx as usize].next().await {
+            slot.set_input(&input.actually_read_it().await);
             slot.set_output(output);
             self.heap.push(slot);
         }
@@ -463,11 +471,11 @@ impl Ord for Slot {
 
 #[cfg(test)]
 mod tests {
+    use super::OpBuilder;
+    use crate::fake_arr::FakeArr;
     use crate::raw::tests::{fst_map, fst_set};
     use crate::raw::Fst;
     use crate::stream::{IntoStreamer, Streamer};
-    use crate::fake_arr::FakeArr;
-    use super::OpBuilder;
 
     fn s(string: &str) -> String {
         string.to_owned()
@@ -480,8 +488,23 @@ mod tests {
                 let op: OpBuilder = fsts.iter().collect();
                 let mut stream = op.$op().into_stream();
                 let mut keys = vec![];
-                while let Some((key, _)) = stream.next() {
+                while let Some((key, _)) = tokio_test::block_on(stream.next()) {
                     keys.push(String::from_utf8(key.to_vec()).unwrap());
+                }
+                keys
+            }
+        };
+    }
+
+    macro_rules! create_set_op2 {
+        ($name:ident, $op:ident) => {
+            fn $name(sets: Vec<Vec<&str>>) -> Vec<String> {
+                let fsts: Vec<Fst> = sets.into_iter().map(fst_set).collect();
+                let op: OpBuilder = fsts.iter().collect();
+                let mut stream = op.$op().into_stream();
+                let mut keys = vec![];
+                while let Some((key, _)) = tokio_test::block_on(stream.next()) {
+                    keys.push(String::from_utf8(tokio_test::block_on(key.to_vec())).unwrap());
                 }
                 keys
             }
@@ -495,7 +518,7 @@ mod tests {
                 let op: OpBuilder = fsts.iter().collect();
                 let mut stream = op.$op().into_stream();
                 let mut keys = vec![];
-                while let Some((key, outs)) = stream.next() {
+                while let Some((key, outs)) = tokio_test::block_on(stream.next()) {
                     let merged = outs.iter().fold(0, |a, b| a + b.value);
                     let s = String::from_utf8(key.to_vec()).unwrap();
                     keys.push((s, merged));
@@ -505,12 +528,29 @@ mod tests {
         };
     }
 
-    create_set_op!(fst_union, union);
-    create_set_op!(fst_intersection, intersection);
+    macro_rules! create_map_op2 {
+        ($name:ident, $op:ident) => {
+            fn $name(sets: Vec<Vec<(&str, u64)>>) -> Vec<(String, u64)> {
+                let fsts: Vec<Fst> = sets.into_iter().map(fst_map).collect();
+                let op: OpBuilder = fsts.iter().collect();
+                let mut stream = op.$op().into_stream();
+                let mut keys = vec![];
+                while let Some((key, outs)) = tokio_test::block_on(stream.next()) {
+                    let merged = outs.iter().fold(0, |a, b| a + b.value);
+                    let s = String::from_utf8(tokio_test::block_on(key.to_vec())).unwrap();
+                    keys.push((s, merged));
+                }
+                keys
+            }
+        };
+    }
+
+    create_set_op2!(fst_union, union);
+    create_set_op2!(fst_intersection, intersection);
     create_set_op!(fst_symmetric_difference, symmetric_difference);
     create_set_op!(fst_difference, difference);
-    create_map_op!(fst_union_map, union);
-    create_map_op!(fst_intersection_map, intersection);
+    create_map_op2!(fst_union_map, union);
+    create_map_op2!(fst_intersection_map, intersection);
     create_map_op!(fst_symmetric_difference_map, symmetric_difference);
     create_map_op!(fst_difference_map, difference);
 

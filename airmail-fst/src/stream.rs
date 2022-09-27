@@ -1,3 +1,5 @@
+use async_trait::async_trait;
+
 /// Streamer describes a "streaming iterator."
 ///
 /// It provides a mechanism for writing code that is generic over streams
@@ -94,6 +96,7 @@
 ///
 /// Stretching this abstraction further with Rust's current type system is not
 /// advised.
+#[async_trait(?Send)]
 pub trait Streamer<'a> {
     /// The type of the item emitted by this stream.
     type Item: 'a;
@@ -103,7 +106,7 @@ pub trait Streamer<'a> {
     ///
     /// It is not specified what a stream does after `None` is emitted. In most
     /// cases, `None` should be emitted on every subsequent call.
-    fn next(&'a mut self) -> Option<Self::Item>;
+    async fn next(&'a mut self) -> Option<Self::Item>;
 }
 
 /// IntoStreamer describes types that can be converted to streams.
