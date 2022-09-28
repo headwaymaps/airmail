@@ -10,7 +10,6 @@ pub type FakeArrRef<'a> = FakeArr<'a>;
 #[derive(Debug, Clone)]
 pub enum FakeArr<'a> {
     FakeLocal(Vec<u8>),
-    Buffer(Buffer),
     Remote(String),
     Slice(&'a FakeArr<'a>, Ulen, Ulen),
 }
@@ -36,9 +35,7 @@ impl<'a> FakeArr<'a> {
         };
         return (start, end - start);
     }
-    /*fn slice_w_range(&self, e: SomRang) -> FakeArrPart<'_> {
 
-    }*/
     pub fn slice(&'a self, bounds: ShRange<Ulen>) -> FakeArr<'a> {
         let (offset, len) = self.get_ofs_len(bounds.0, bounds.1);
         FakeArr::Slice(&self, offset, len)
@@ -71,15 +68,7 @@ macro_rules! slic {
     ($($e:ident).+ [..=$y:tt]) => (($($e).*).slice((..=($y)).into()));
     ($($e:ident).+ [..]) =>(($($e).*).slice((..).into()));
 }
-// #[macro_export]
-// macro_rules! slic2 {
-//     ($($e:ident).+ [$x:tt..]) => (($($e).*).slice2(($x..).into()));
-//     ($($e:ident).+ [$x:tt..$y:tt]) => (($($e).*).slice2(($x..$y).into()));
-//     ($($e:ident).+ [..=$y:tt]) => (($($e).*).slice2((..=$y).into()));
-//     ($($e:ident).+ [..]) =>(($($e).*).slice2((..).into()));
-//     ($($e:ident).+ [$x:tt]) => (($($e).*).get_byte($x));
-// }
-// todo: is there any better way?
+
 pub struct ShRange<T>(Bound<T>, Bound<T>);
 
 fn bound_cloned<T: Clone>(b: Bound<&T>) -> Bound<T> {
@@ -112,11 +101,6 @@ impl<T: Clone> From<RangeToInclusive<T>> for ShRange<T> {
 
 const EMPTY1: Vec<u8> = vec![];
 
-pub fn empty() -> FakeArr<'static> {
-    let x = FakeArr::FakeLocal(EMPTY1);
-    x
-}
-
-pub fn local_slice_to_fake_arr<'a>(slice: &'a [u8]) -> FakeArr<'a> {
+pub fn local_slice_to_fake_arr<'a>(slice: &[u8]) -> FakeArr<'a> {
     FakeArr::FakeLocal(slice.to_vec())
 }

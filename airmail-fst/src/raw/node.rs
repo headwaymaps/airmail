@@ -9,7 +9,7 @@ use crate::raw::common_inputs::{COMMON_INPUTS, COMMON_INPUTS_INV};
 use crate::raw::pack::{pack_size, pack_uint, pack_uint_in, unpack_uint};
 use crate::raw::{u64_to_Ulen, CompiledAddr, Output, Transition, EMPTY_ADDRESS};
 use crate::{
-    fake_arr::{empty, FakeArr, FakeArrRef, Ulen},
+    fake_arr::{FakeArr, FakeArrRef, Ulen},
     raw::build::BuilderNode,
     slic,
 };
@@ -59,7 +59,7 @@ pub async fn node_new<'a>(version: u64, addr: CompiledAddr, data: &'a FakeArrRef
     let state = State::new(data.clone(), addr).await;
     match state {
         EmptyFinal => Node {
-            data: empty(),
+            data: FakeArr::FakeLocal(vec![]),
             version,
             state: State::EmptyFinal,
             start: EMPTY_ADDRESS,
@@ -873,7 +873,8 @@ mod tests {
             for word in &bs {
                 bfst.add(word).unwrap();
             }
-            let fst = Fst::new_from_vec(&bfst.into_inner().unwrap()).unwrap();
+            let fake_arr = FakeArr::FakeLocal(bfst.into_inner().unwrap());
+            let fst = tokio_test::block_on(Fst::new(fake_arr)).unwrap();
             let mut rdr = fst.stream();
             let mut words = vec![];
             while let Some(w) = tokio_test::block_on(rdr.next()) {

@@ -63,12 +63,12 @@ impl<'f> OpBuilder<'f> {
     ///
     /// The stream must emit a lexicographically ordered sequence of key-value
     /// pairs.
-    pub fn add<I, S>(mut self, stream: I) -> Self
+    pub fn add<I, S>(mut self, stream: I) -> OpBuilder<'f>
     where
         I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, Output)>,
         S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Output)>,
     {
-        self.push(stream);
+        self.streams.push(Box::new(stream.into_stream()));
         self
     }
 

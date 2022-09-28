@@ -31,11 +31,11 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use crate::fake_arr::local_slice_to_fake_arr;
 use crate::{
     automaton::{AlwaysMatch, Automaton},
-    fake_arr::{empty, FakeArr, FakeArrRef, Ulen},
+    fake_arr::{FakeArr, FakeArrRef, Ulen},
 };
 use crate::{error::Result, slic};
 use crate::{
-    fake_arr::{full_slice, FakeArrSlice, ShRange},
+    fake_arr::ShRange,
     stream::{IntoStreamer, Streamer},
 };
 
@@ -297,16 +297,16 @@ struct FstMeta {
 
 impl FstMeta {
     #[inline(always)]
-    async fn root<'f>(&self, data: FakeArrRef<'f>) -> Node<'f> {
+    async fn root<'f>(&self, data: &'f FakeArrRef<'f>) -> Node<'f> {
         self.node(self.root_addr, data).await
     }
 
     #[inline(always)]
-    async fn node<'f>(&self, addr: CompiledAddr, data: FakeArrRef<'f>) -> Node<'f> {
+    async fn node<'f>(&self, addr: CompiledAddr, data: &'f FakeArrRef<'f>) -> Node<'f> {
         node_new(self.version, addr, data).await
     }
 
-    async fn empty_final_output(&self, data: FakeArrRef<'_>) -> Option<Output> {
+    async fn empty_final_output<'f>(&self, data: &'f FakeArrRef<'f>) -> Option<Output> {
         let root = self.root(data).await;
         if root.is_final() {
             Some(root.final_output())
@@ -318,19 +318,16 @@ impl FstMeta {
 
 impl<'arr> Fst<'arr> {
     /// Open a `Fst` from a given data.
-    pub fn new(data: FakeArr) -> Result<Fst> {
+    pub async fn new(data: FakeArr<'arr>) -> Result<Fst<'arr>> {
         // let data = data.into();
         if data.len() < 32 {
             return Err(Error::Format.into());
         }
-        // The read_u64 unwraps below are OK because they can never fail.
-        // They can only fail when there is an IO error or if there is an
-        // unexpected EOF. However, we are reading from a byte slice (no
-        // IO errors possible) and we've confirmed the byte slice is at least
-        // N bytes (no unexpected EOF).
-        let mut flonk = slic!(data[0..]);
-
-        let version = flonk.read_u64::<LittleEndian>().unwrap();
+        let version = slic!(data[0..8])
+            .actually_read_it()
+            .await
+            .as_slice()
+            .read_u64::<LittleEndian>()?;
         if version == 0 || version > VERSION {
             return Err(Error::Version {
                 expected: VERSION,
@@ -338,16 +335,27 @@ impl<'arr> Fst<'arr> {
             }
             .into());
         }
-        let mut bonk = slic!(data[8..]);
-        let ty = bonk.read_u64::<LittleEndian>().unwrap();
+        let ty = slic!(data[8..16])
+            .actually_read_it()
+            .await
+            .as_slice()
+            .read_u64::<LittleEndian>()?;
         let root_addr = {
-            let mut last = slic!(data[(data.len() - 8)..]);
+            let last = slic!(data[(data.len() - 8)..])
+                .actually_read_it()
+                .await
+                .as_slice()
+                .read_u64::<LittleEndian>()?;
             // println!("len={}, d={:#?}, data={:?}, full={:#?}", data.len(), last, last.to_vec(), data.to_vec());
-            u64_to_Ulen(last.read_u64::<LittleEndian>().unwrap())
+            u64_to_Ulen(last)
         };
         let len = {
-            let mut last2 = slic!(data[(data.len() - 16)..]);
-            u64_to_Ulen(last2.read_u64::<LittleEndian>().unwrap())
+            let last2 = slic!(data[(data.len() - 16)..(data.len() - 8)])
+                .actually_read_it()
+                .await
+                .as_slice()
+                .read_u64::<LittleEndian>()?;
+            u64_to_Ulen(last2)
         };
         println!("root={}, len={}", root_addr, len);
         // The root node is always the last node written, so its address should
@@ -382,10 +390,6 @@ impl<'arr> Fst<'arr> {
                 len,
             },
         })
-    }
-
-    pub fn new_from_vec(data: &[u8]) -> Result<Fst> {
-        return Fst::new(FakeArr::FakeLocal(data.to_vec()));
     }
 
     /// Retrieves the value associated with a key.
@@ -488,7 +492,9 @@ impl<'arr> Fst<'arr> {
         I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, Output)>,
         S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Output)>,
     {
-        self.op().add(stream).intersection().next().await.is_none()
+        let mut op = self.op();
+        op.push(stream);
+        op.intersection().next().await.is_none()
     }
 
     /// Returns true if and only if the `self` fst is a subset of the fst
@@ -501,7 +507,9 @@ impl<'arr> Fst<'arr> {
         I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, Output)>,
         S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Output)>,
     {
-        let mut op = self.op().add(stream).intersection();
+        let mut op = self.op();
+        op.push(stream);
+        let mut op = op.intersection();
         let mut count = 0;
         while let Some(_) = op.next().await {
             count += 1;
@@ -519,7 +527,9 @@ impl<'arr> Fst<'arr> {
         I: for<'a> IntoStreamer<'a, Into = S, Item = (FakeArrRef<'a>, Output)>,
         S: 'f + for<'a> Streamer<'a, Item = (FakeArrRef<'a>, Output)>,
     {
-        let mut op = self.op().add(stream).union();
+        let mut op = self.op();
+        op.push(stream);
+        let mut op = op.union();
         let mut count = 0;
         while let Some(_) = op.next().await {
             count += 1;
@@ -542,7 +552,7 @@ impl<'arr> Fst<'arr> {
     /// Returns the root node of this fst.
     #[inline(always)]
     pub async fn root(&self) -> Node {
-        self.meta.root(slic!(self.data[..])).await
+        self.meta.root(&self.data).await
     }
 
     /// Returns the node at the given address.
@@ -550,7 +560,7 @@ impl<'arr> Fst<'arr> {
     /// Node addresses can be obtained by reading transitions on `Node` values.
     #[inline]
     pub async fn node(&self, addr: CompiledAddr) -> Node {
-        self.meta.node(addr, slic!(self.data[..])).await
+        self.meta.node(addr, &self.data).await
     }
 
     /// Returns a copy of the binary contents of this FST.
@@ -560,9 +570,12 @@ impl<'arr> Fst<'arr> {
     }
 }
 
-impl<'a, 'f> IntoStreamer<'a> for &'f Fst<'f> {
+impl<'a, 'f> IntoStreamer<'a> for &'f Fst<'f>
+where
+    'f: 'a,
+{
     type Item = (FakeArrRef<'a>, Output);
-    type Into = Stream<'f>;
+    type Into = Stream<'a>;
 
     #[inline]
     fn into_stream(self) -> Self::Into {
@@ -640,11 +653,11 @@ impl<'f, A: Automaton> StreamBuilder<'f, A> {
     }
 }
 
-impl<'a, 'f, A: Automaton> IntoStreamer<'a> for StreamBuilder<'f, A> {
+impl<'a, A: Automaton> IntoStreamer<'a> for StreamBuilder<'a, A> {
     type Item = (FakeArrRef<'a>, Output);
-    type Into = Stream<'f, A>;
+    type Into = Stream<'a, A>;
 
-    fn into_stream(self) -> Stream<'f, A> {
+    fn into_stream(self) -> Stream<'a, A> {
         Stream::new(
             self.meta,
             self.data,
@@ -810,7 +823,10 @@ impl<'f, A: Automaton> Stream<'f, A> {
 }
 
 #[async_trait(?Send)]
-impl<'f, 'a, A: Automaton> Streamer<'a> for Stream<'f, A> {
+impl<'f, 'a, A: Automaton> Streamer<'a> for Stream<'f, A>
+where
+    'f: 'a,
+{
     type Item = (FakeArrRef<'a>, Output);
 
     async fn next(&'a mut self) -> Option<Self::Item> {
@@ -887,14 +903,14 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     /// This theoretically should be straight-forward, but we need to make
     /// sure our stack is correct, which includes accounting for automaton
     /// states.
-    async fn seek(&mut self, min: &Bound, max: &Bound) {
+    async fn seek(&'f mut self, min: &Bound, max: &Bound) {
         let start_bound = if self.reversed { &max } else { &min };
         if min.is_empty() && min.is_inclusive() {
             self.empty_output = self.resolve_empty_output(min, max).await;
         }
         if start_bound.is_empty() {
             self.stack.clear();
-            let node = self.fst.root(self.data.clone()).await;
+            let node = self.fst.root(&self.data).await;
             let transition = self.starting_transition(&node);
             self.stack = vec![StreamState {
                 node,
@@ -916,7 +932,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
         // N.B. We do not necessarily need to stop in a final state, unlike
         // the one-off `find` method. For the example, the given bound might
         // not actually exist in the FST.
-        let mut node = self.fst.root(self.data.clone()).await;
+        let mut node = self.fst.root(&self.data).await;
         let mut out = Output::zero();
         let mut aut_state = self.aut.start();
         for &b in key {
@@ -936,7 +952,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                     });
                     let t = t.await;
                     out = out.cat(t.out);
-                    node = self.fst.node(t.addr, self.data.clone()).await;
+                    node = self.fst.node(t.addr, &self.data).await;
                 }
                 None => {
                     // This is a little tricky. We're in this case if the
@@ -979,7 +995,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                         .transition(transition.unwrap_or_default())
                         .await
                         .addr,
-                    self.data.clone(),
+                    &self.data,
                 )
                 .await;
             let starting_transition = self.starting_transition(&next_node);
@@ -997,12 +1013,17 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
     async fn next<'a, F, T>(&'a mut self, transform: F) -> Option<(FakeArrRef<'a>, Output, T)>
     where
         F: Fn(&A::State) -> T,
+        'a: 'f,
     {
         println!("next()");
         if !self.reversed {
             // Inorder empty output (will be first).
             if let Some(out) = self.empty_output.take() {
-                return Some((empty(), out, transform(&self.aut.start())));
+                return Some((
+                    FakeArr::FakeLocal(vec![]),
+                    out,
+                    transform(&self.aut.start()),
+                ));
             }
         }
         while let Some(state) = self.stack.pop() {
@@ -1027,7 +1048,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             let out = state.out.cat(trans.out);
             let next_state = self.aut.accept(&state.aut_state, trans.inp);
             let is_match = self.aut.is_match(&next_state);
-            let next_node = self.fst.node(trans.addr, self.data);
+            let next_node = self.fst.node(trans.addr, &self.data);
             self.inp.push(trans.inp);
             let current_transition = self.next_transition(&state.node, state.trans);
             self.stack.push(StreamState {
@@ -1039,7 +1060,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
             let next_node = next_node.await;
             let next_transition = self.starting_transition(&next_node);
             self.stack.push(StreamState {
-                node: next_node,
+                node: next_node.clone(),
                 trans: next_transition.unwrap_or_default(),
                 out,
                 aut_state: next_state,
@@ -1053,7 +1074,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
                     return None;
                 } else if !self.reversed && next_node.is_final() && is_match {
                     return Some((
-                        FakeArr::FakeLocal(self.inp.buf),
+                        FakeArr::FakeLocal(self.inp.buf.to_vec()),
                         out.cat(next_node.final_output()),
                         ns,
                     ));
@@ -1062,9 +1083,13 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
         }
         // If we are streaming backward, we still need to return the empty output, if empty is
         // part of our fst, matches the range and the automaton
-        self.empty_output
-            .take()
-            .map(|out| (empty(), out, transform(&self.aut.start())))
+        self.empty_output.take().map(|out| {
+            (
+                FakeArr::FakeLocal(vec![]),
+                out,
+                transform(&self.aut.start()),
+            )
+        })
     }
 
     // The first transition that is in a bound for a given node.
@@ -1100,7 +1125,7 @@ impl<'f, A: Automaton> StreamWithState<'f, A> {
         if !self.aut.is_match(&start) {
             return None;
         }
-        self.fst.empty_final_output(self.data.clone()).await
+        self.fst.empty_final_output(&self.data).await
     }
 
     #[inline]
